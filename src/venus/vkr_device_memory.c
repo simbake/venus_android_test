@@ -188,15 +188,6 @@ vkr_gbm_bo_get_fd(ASSERTED void *gbm_bo)
 
 #define UNUSED __attribute__((unused))
 
-/* Mock structure for demonstration purposes */
-struct fake_gbm_bo {
-    void *base;
-    void *handle;
-    size_t size;
-    int (*allocate)(const AHardwareBuffer_Desc *, void **);
-    void (*release)(void *);
-};
-
 void vkr_gbm_bo_destroy(struct fake_gbm_bo *bo) {
     if (!bo)
         return;
