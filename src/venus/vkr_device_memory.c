@@ -188,17 +188,14 @@ vkr_gbm_bo_get_fd(ASSERTED void *gbm_bo)
 
 #define UNUSED __attribute__((unused))
 
-void vkr_gbm_bo_destroy(struct fake_gbm_bo *bo) {
-    if (!bo)
-        return;
+// Function to get maximum allocation size
+size_t get_max_allocation_size(VkPhysicalDevice physical_device) {
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
 
-    if (bo->base && bo->release)
-        bo->release(bo->base);
-
-    if (bo->handle)
-        dlclose(bo->handle);
-
-    free(bo);
+    // Return the maximum allocation size supported by the device
+    // Assuming we are working with a single heap
+    return memory_properties.memoryHeaps[0].size;  // Adjust for multiple heaps if needed
 }
 
 static VkResult
@@ -239,8 +236,11 @@ vkr_get_fd_info_from_allocation_info(UNUSED struct vkr_physical_device *physical
 
     bo->size = alloc_info->allocationSize;
 
-    if (bo->size == 0 || bo->size > MAX_ALLOCATION_SIZE) {
-        vkr_log("Invalid allocation size: %zu", bo->size);
+    // Get the maximum allocation size from the physical device
+    size_t max_allocation_size = get_max_allocation_size(physical_dev);
+
+    if (bo->size == 0 || bo->size > max_allocation_size) {
+        vkr_log("Invalid allocation size: %zu, exceeds max limit: %zu", bo->size, max_allocation_size);
         dlclose(bo->handle);
         free(bo);
         return VK_ERROR_OUT_OF_DEVICE_MEMORY;
@@ -285,7 +285,6 @@ error_free_bo:
     vkr_gbm_bo_destroy(bo);
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 }
-
 
 /*   */
 /*
