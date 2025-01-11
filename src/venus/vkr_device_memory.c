@@ -197,7 +197,7 @@ vkr_gbm_bo_destroy(ASSERTED void *gbm_bo)
 }
 #endif
 /* edited here stop here */
-#ifdef __ANDROID__
+#if defined (__ANDROID__)
 #include <dlfcn.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_android.h>
