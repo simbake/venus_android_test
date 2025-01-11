@@ -201,7 +201,6 @@ vkr_gbm_bo_destroy(ASSERTED void *gbm_bo)
 #include <dlfcn.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_android.h>
-#include "vkr_log.h"
 
 #define UNUSED __attribute__((unused))
 
