@@ -175,28 +175,12 @@ vkr_gbm_bo_get_fd(ASSERTED void *gbm_bo)
 }
 #endif
 
-#if defined (__ANDROID__)
-static void
-vkr_gbm_bo_destroy(void *gbm_bo)
-{
-   struct fake_gbm_bo *bo = gbm_bo;
-   if (!bo)
-      return;
+/*   */
+/*
+/* edited here start here */
+/*
+/*   */
 
-   if (bo->base)
-      bo->release(bo->base);
-   dlclose(bo->handle);
-   free(gbm_bo);
-}
-#else
-static inline void
-vkr_gbm_bo_destroy(ASSERTED void *gbm_bo)
-{
-   vkr_log("minigbm_allocation is not enabled");
-   assert(!gbm_bo);
-}
-#endif
-/* edited here stop here */
 #if defined (__ANDROID__)
 #include <dlfcn.h>
 #include <vulkan/vulkan.h>
@@ -310,7 +294,14 @@ error_free_bo:
     vkr_gbm_bo_destroy(bo);
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 }
-/* edited ended here */
+
+
+/*   */
+/*
+/* edited here stop here */
+/*
+/*   */
+
 
 #else
 static inline VkResult
