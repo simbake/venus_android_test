@@ -196,7 +196,7 @@ vkr_gbm_bo_destroy(ASSERTED void *gbm_bo)
    assert(!gbm_bo);
 }
 #endif
-// edited here stop here
+/* edited here stop here */
 #ifdef __ANDROID__
 #include <dlfcn.h>
 #include <vulkan/vulkan.h>
@@ -205,7 +205,7 @@ vkr_gbm_bo_destroy(ASSERTED void *gbm_bo)
 
 #define UNUSED __attribute__((unused))
 
-// Mock structure for demonstration purposes
+/* Mock structure for demonstration purposes */
 struct fake_gbm_bo {
     void *base;
     void *handle;
@@ -311,7 +311,7 @@ error_free_bo:
     vkr_gbm_bo_destroy(bo);
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 }
-// edited ended here
+/* edited ended here */
 
 #else
 static inline VkResult
