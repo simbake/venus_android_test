@@ -188,7 +188,6 @@ void vkr_gbm_bo_destroy(struct fake_gbm_bo *bo);
 #include <dlfcn.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_android.h>
-#include "vkr_log.h"
 
 #define UNUSED __attribute__((unused))
 
