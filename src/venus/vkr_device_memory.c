@@ -10,6 +10,8 @@
 #include "vkr_device_memory_gen.h"
 #include "vkr_physical_device.h"
 
+#include "vkr_device_memory.h"
+
 static bool
 vkr_get_fd_info_from_resource_info(struct vkr_context *ctx,
                                    const VkImportMemoryResourceInfoMESA *res_info,
@@ -31,12 +33,15 @@ vkr_get_fd_info_from_resource_info(struct vkr_context *ctx,
       handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
       break;
    default:
+      vkr_log("Unsupported fd_type: %d", res->fd_type);
       return false;
    }
 
    int fd = os_dupfd_cloexec(res->u.fd);
-   if (fd < 0)
+   if (fd < 0) {
+      vkr_log("os_dupfd_cloexec failed: %d (errno: %d)", fd, errno);
       return false;
+   }
 
    *out = (VkImportMemoryFdInfoKHR){
       .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
@@ -53,21 +58,6 @@ vkr_get_fd_info_from_resource_info(struct vkr_context *ctx,
 #define GBM_BO_USE_SW_READ_RARELY (1 << 10)
 #define GBM_BO_USE_SW_WRITE_RARELY (1 << 12)
 
-static inline int
-vkr_gbm_bo_get_fd(void *gbm_bo)
-{
-   assert(gbm_bo);
-
-   /* gbm_bo_get_fd returns negative error code on failure */
-   return gbm_bo_get_fd(gbm_bo);
-}
-
-static inline void
-vkr_gbm_bo_destroy(void *gbm_bo)
-{
-   gbm_bo_destroy(gbm_bo);
-}
-
 static VkResult
 vkr_get_fd_info_from_allocation_info(struct vkr_physical_device *physical_dev,
                                      const VkMemoryAllocateInfo *alloc_info,
@@ -76,29 +66,34 @@ vkr_get_fd_info_from_allocation_info(struct vkr_physical_device *physical_dev,
 {
    const uint32_t gbm_bo_use_flags =
       GBM_BO_USE_LINEAR | GBM_BO_USE_SW_READ_RARELY | GBM_BO_USE_SW_WRITE_RARELY;
-   struct gbm_bo *gbm_bo;
+   struct gbm_bo *gbm_bo = NULL;
    int fd = -1;
 
-   assert(physical_dev->gbm_device);
+   if (!physical_dev->gbm_device) {
+      vkr_log("No valid GBM device available.");
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
 
-   /*
-    * Reject here for simplicity. Letting VkPhysicalDeviceVulkan11Properties return
-    * min(maxMemoryAllocationSize, UINT32_MAX) will affect unmappable scenarios.
-    */
-   if (alloc_info->allocationSize > UINT32_MAX)
+   /* Ensure allocation size is reasonable */
+   if (alloc_info->allocationSize > UINT32_MAX) {
+      vkr_log("Allocation size %llu exceeds UINT32_MAX.", alloc_info->allocationSize);
       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   }
 
-   /* 4K alignment is used on all implementations we support. */
-   gbm_bo =
-      gbm_bo_create(physical_dev->gbm_device, align(alloc_info->allocationSize, 4096), 1,
-                    GBM_FORMAT_R8, gbm_bo_use_flags);
-   if (!gbm_bo)
+   /* Align allocation size to 4KB boundary */
+   gbm_bo = gbm_bo_create(physical_dev->gbm_device, 
+                          align(alloc_info->allocationSize, 4096), 1,
+                          GBM_FORMAT_R8, gbm_bo_use_flags);
+   if (!gbm_bo) {
+      vkr_log("gbm_bo_create failed.");
       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   }
 
-   fd = vkr_gbm_bo_get_fd(gbm_bo);
+   fd = gbm_bo_get_fd(gbm_bo);
    if (fd < 0) {
       vkr_gbm_bo_destroy(gbm_bo);
-      return fd == -EMFILE ? VK_ERROR_TOO_MANY_OBJECTS : VK_ERROR_OUT_OF_HOST_MEMORY;
+      vkr_log("Failed to get fd from GBM buffer object.");
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
 
    *out_gbm_bo = (void *)gbm_bo;
@@ -108,213 +103,27 @@ vkr_get_fd_info_from_allocation_info(struct vkr_physical_device *physical_dev,
       .fd = fd,
       .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
    };
+
    return VK_SUCCESS;
 }
 
-#else
+#else /* ENABLE_MINIGBM_ALLOCATION not defined */
 
-#if defined (__ANDROID__)
-#include <dlfcn.h>
-#include <android/hardware_buffer.h>
-#include <vulkan/vulkan_android.h>
-
-typedef struct native_handle {
-  int version; /* sizeof(native_handle_t) */
-  int numFds;  /* number of file-descriptors at &data[0] */
-  int numInts; /* number of ints at &data[numFds] */
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wzero-length-array"
-#endif
-  int data[0]; /* numFds + numInts ints */
-#if defined(__clang__)
-#pragma clang diagnostic pop
-#endif
-} native_handle_t;
-
-typedef int (*pfnAHardwareBuffer_allocate)(const AHardwareBuffer_Desc *desc, AHardwareBuffer **outBuffer);
-typedef void (*pfnAHardwareBuffer_release)(AHardwareBuffer *buffer);
-typedef const native_handle_t *(*pfnAHardwareBuffer_getNativeHandle)(const AHardwareBuffer *buffer);
-
-struct fake_gbm_bo {
-   AHardwareBuffer *base;
-   void *handle;
-   size_t size;
-   pfnAHardwareBuffer_allocate allocate;
-   pfnAHardwareBuffer_release release;
-   pfnAHardwareBuffer_getNativeHandle getNativeHandle;
-};
-#endif
-
-#if defined (__ANDROID__)
-static int
-vkr_gbm_bo_get_fd(void *gbm_bo)
-{
-   struct fake_gbm_bo *bo = gbm_bo;
-
-   const native_handle_t *bo_handle = bo->getNativeHandle(bo->base);
-   if (bo_handle) {
-      for (int i = 0u; i < bo_handle->numFds; i++) {
-         size_t size = lseek(bo_handle->data[i], 0, SEEK_END);
-         if (size < bo->size)
-            continue;
-
-         return os_dupfd_cloexec(bo_handle->data[i]);
-      }
-   }
-
-   return -1;
-}
-#else
-static inline int
-vkr_gbm_bo_get_fd(ASSERTED void *gbm_bo)
-{
-   vkr_log("minigbm_allocation is not enabled");
-   assert(!gbm_bo);
-   return -1;
-}
-#endif
-
-//xxxxxxxx*/
-//
-//edited here start here*/
-//
-//xxxxxxxxxx*/
-
-#ifdef __ANDROID__
-#include <dlfcn.h>
-#include <vulkan/vulkan.h>
-#include <vulkan/vulkan_android.h>
-
-static void vkr_gbm_bo_destroy(struct fake_gbm_bo *bo) {
-    if (!bo)
-        return;
-
-    if (bo->base && bo->release)
-        bo->release(bo->base);
-
-    if (bo->handle)
-        dlclose(bo->handle);
-
-    free(bo);
-}
-
-// Declaring vkr_gbm_bo_destroy function to fix the implicit declaration error.
-void vkr_gbm_bo_destroy(struct fake_gbm_bo *bo);
-// Function to get maximum allocation size
-size_t get_max_allocation_size(VkPhysicalDevice physical_device) {
-    VkPhysicalDeviceMemoryProperties memory_properties;
-    vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
-
-    // Return the maximum allocation size supported by the device
-    // Assuming we are working with a single heap
-    return memory_properties.memoryHeaps[0].size;  
-// Adjust for multiple heaps if needed
-
-static VkResult
-vkr_get_fd_info_from_allocation_info(UNUSED struct vkr_physical_device *physical_dev,
-                                     const VkMemoryAllocateInfo *alloc_info,
-                                     void **out_gbm_bo,
-                                     VkImportMemoryFdInfoKHR *out_fd_info) {
-    if (!alloc_info || !out_gbm_bo || !out_fd_info) {
-        vkr_log("Invalid arguments passed to vkr_get_fd_info_from_allocation_info");
-        return VK_ERROR_INITIALIZATION_FAILED;
-    }
-
-    struct fake_gbm_bo *bo = malloc(sizeof(*bo));
-    if (!bo) {
-        vkr_log("Failed to allocate memory for gbm_bo");
-        return VK_ERROR_OUT_OF_HOST_MEMORY;
-    }
-
-    bo->handle = dlopen("libandroid.so", RTLD_NOW);
-    if (!bo->handle) {
-        vkr_log("dlopen failed: %s", dlerror());
-        free(bo);
-        return VK_ERROR_INITIALIZATION_FAILED;
-    }
-
-#define LOAD_SYMBOL(func)                                                                  \
-    bo->func = (pfnAHardwareBuffer_##func)dlsym(bo->handle, "AHardwareBuffer_" #func);     \
-    if (!bo->func) {                                                                      \
-        vkr_log("Failed to load symbol: AHardwareBuffer_%s", #func);                      \
-        dlclose(bo->handle);                                                              \
-        free(bo);                                                                         \
-        return VK_ERROR_INITIALIZATION_FAILED;                                            \
-    }
-
-    LOAD_SYMBOL(allocate)
-    LOAD_SYMBOL(release)
-    #undef LOAD_SYMBOL
-
-    bo->size = alloc_info->allocationSize;
-
-    // Get the maximum allocation size from the physical device
-    size_t max_allocation_size = get_max_allocation_size(physical_dev);
-
-    if (bo->size == 0 || bo->size > max_allocation_size) {
-        vkr_log("Invalid allocation size: %zu, exceeds max limit: %zu", bo->size, max_allocation_size);
-        dlclose(bo->handle);
-        free(bo);
-        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-    }
-
-    AHardwareBuffer_Desc bo_desc = {
-        .width = alloc_info->allocationSize,
-        .height = 1,
-        .layers = 1,
-        .format = AHARDWAREBUFFER_FORMAT_BLOB,
-        .usage = AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER |
-                 AHARDWAREBUFFER_USAGE_CPU_READ_RARELY |
-                 AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY,
-    };
-
-    if (bo_desc.width == 0 || bo_desc.height == 0) {
-        vkr_log("Invalid buffer dimensions: width=%u, height=%u", bo_desc.width, bo_desc.height);
-        dlclose(bo->handle);
-        free(bo);
-        return VK_ERROR_INITIALIZATION_FAILED;
-    }
-
-    if (bo->allocate(&bo_desc, &bo->base)) {
-        vkr_log("Failed to allocate AHardwareBuffer");
-        dlclose(bo->handle);
-        free(bo);
-        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-    }
-
-    VkImportAndroidHardwareBufferInfoANDROID *out_hwb_info = (void *)out_fd_info;
-    *out_gbm_bo = bo;
-    *out_hwb_info = (VkImportAndroidHardwareBufferInfoANDROID){
-        .sType = VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID,
-        .pNext = alloc_info->pNext,
-        .buffer = bo->base,
-    };
-
-    vkr_log("AHardwareBuffer successfully allocated with size: %zu", bo->size);
-    return VK_SUCCESS;
-}
-
-//xxxxxxxxx*/
-//
-//edited here stop here*/
-//
-//xxxxxxxxxx*/
-
-
-#else
+/* Fallback stubs for environments without GBM support */
 static inline VkResult
 vkr_get_fd_info_from_allocation_info(UNUSED struct vkr_physical_device *physical_dev,
                                      UNUSED const VkMemoryAllocateInfo *alloc_info,
                                      UNUSED void **out_gbm_bo,
                                      UNUSED VkImportMemoryFdInfoKHR *out_fd_info)
 {
-   vkr_log("minigbm_allocation is not enabled");
-   return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   vkr_log("minigbm_allocation is not enabled in this environment.");
+   return VK_ERROR_FEATURE_NOT_PRESENT;
 }
+
 #endif
 
-#endif /* ENABLE_MINIGBM_ALLOCATION */
+
+/* ENABLE_MINIGBM_ALLOCATION */
 
 static void
 vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
