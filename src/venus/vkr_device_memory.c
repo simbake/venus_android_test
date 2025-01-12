@@ -175,14 +175,24 @@ vkr_gbm_bo_get_fd(ASSERTED void *gbm_bo)
 }
 #endif
 
-/*xxxxxxxx*/
-/*
-/*edited here start here*/
-/*
-/*xxxxxxxxxx*/
+//xxxxxxxx*/
+//
+//edited here start here*/
+//
+//xxxxxxxxxx*/
 
 // Declaring vkr_gbm_bo_destroy function to fix the implicit declaration error.
 void vkr_gbm_bo_destroy(struct fake_gbm_bo *bo);
+// Function to get maximum allocation size
+size_t get_max_allocation_size(VkPhysicalDevice physical_device) {
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
+
+    // Return the maximum allocation size supported by the device
+    // Assuming we are working with a single heap
+    return memory_properties.memoryHeaps[0].size;  
+// Adjust for multiple heaps if needed
+
 
 #ifdef __ANDROID__
 #include <dlfcn.h>
@@ -190,15 +200,6 @@ void vkr_gbm_bo_destroy(struct fake_gbm_bo *bo);
 #include <vulkan/vulkan_android.h>
 
 #define UNUSED __attribute__((unused))
-
-// Mock structure for demonstration purposes
-struct fake_gbm_bo {
-    void *base;
-    void *handle;
-    size_t size;
-    int (*allocate)(const AHardwareBuffer_Desc *, void **);
-    void (*release)(void *);
-};
 
 void vkr_gbm_bo_destroy(struct fake_gbm_bo *bo) {
     if (!bo)
@@ -297,13 +298,11 @@ vkr_get_fd_info_from_allocation_info(UNUSED struct vkr_physical_device *physical
     return VK_SUCCESS;
 }
 
-#endif
-
-/*xxxxxxxxx*/
-/*
-/*edited here stop here*/
-/*
-/*xxxxxxxxxx*/
+//xxxxxxxxx*/
+//
+//edited here stop here*/
+//
+//xxxxxxxxxx*/
 
 
 #else
