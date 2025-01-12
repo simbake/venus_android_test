@@ -175,27 +175,43 @@ vkr_gbm_bo_get_fd(ASSERTED void *gbm_bo)
 }
 #endif
 
-/*   */
+/*xxxxxxxx*/
 /*
-/* edited here start here */
+/*edited here start here*/
 /*
-/*   */
+/*xxxxxxxxxx*/
 
-#if defined (__ANDROID__)
+// Declaring vkr_gbm_bo_destroy function to fix the implicit declaration error.
+void vkr_gbm_bo_destroy(struct fake_gbm_bo *bo);
+
+#ifdef __ANDROID__
 #include <dlfcn.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_android.h>
+#include "vkr_log.h"
 
 #define UNUSED __attribute__((unused))
 
-// Function to get maximum allocation size
-size_t get_max_allocation_size(VkPhysicalDevice physical_device) {
-    VkPhysicalDeviceMemoryProperties memory_properties;
-    vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
+// Mock structure for demonstration purposes
+struct fake_gbm_bo {
+    void *base;
+    void *handle;
+    size_t size;
+    int (*allocate)(const AHardwareBuffer_Desc *, void **);
+    void (*release)(void *);
+};
 
-    // Return the maximum allocation size supported by the device
-    // Assuming we are working with a single heap
-    return memory_properties.memoryHeaps[0].size;  // Adjust for multiple heaps if needed
+void vkr_gbm_bo_destroy(struct fake_gbm_bo *bo) {
+    if (!bo)
+        return;
+
+    if (bo->base && bo->release)
+        bo->release(bo->base);
+
+    if (bo->handle)
+        dlclose(bo->handle);
+
+    free(bo);
 }
 
 static VkResult
@@ -280,17 +296,15 @@ vkr_get_fd_info_from_allocation_info(UNUSED struct vkr_physical_device *physical
 
     vkr_log("AHardwareBuffer successfully allocated with size: %zu", bo->size);
     return VK_SUCCESS;
-
-error_free_bo:
-    vkr_gbm_bo_destroy(bo);
-    return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 }
 
-/*   */
+#endif
+
+/*xxxxxxxxx*/
 /*
-/* edited here stop here */
+/*edited here stop here*/
 /*
-/*   */
+/*xxxxxxxxxx*/
 
 
 #else
