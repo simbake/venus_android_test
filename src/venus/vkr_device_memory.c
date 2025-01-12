@@ -186,7 +186,7 @@ vkr_gbm_bo_get_fd(ASSERTED void *gbm_bo)
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_android.h>
 
-void vkr_gbm_bo_destroy(struct fake_gbm_bo *bo) {
+static void vkr_gbm_bo_destroy(struct fake_gbm_bo *bo) {
     if (!bo)
         return;
 
