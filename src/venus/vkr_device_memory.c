@@ -58,6 +58,21 @@ vkr_get_fd_info_from_resource_info(struct vkr_context *ctx,
 #define GBM_BO_USE_SW_READ_RARELY (1 << 10)
 #define GBM_BO_USE_SW_WRITE_RARELY (1 << 12)
 
+static inline int
+vkr_gbm_bo_get_fd(void *gbm_bo)
+{
+   assert(gbm_bo);
+
+   /* gbm_bo_get_fd returns negative error code on failure */
+   return gbm_bo_get_fd(gbm_bo);
+}
+
+static inline void
+vkr_gbm_bo_destroy(void *gbm_bo)
+{
+   gbm_bo_destroy(gbm_bo);
+}
+
 static VkResult
 vkr_get_fd_info_from_allocation_info(struct vkr_physical_device *physical_dev,
                                      const VkMemoryAllocateInfo *alloc_info,
