@@ -10,8 +10,6 @@
 #include "vkr_device_memory_gen.h"
 #include "vkr_physical_device.h"
 
-#include "vkr_device_memory.h"
-
 static bool
 vkr_get_fd_info_from_resource_info(struct vkr_context *ctx,
                                    const VkImportMemoryResourceInfoMESA *res_info,
@@ -33,15 +31,12 @@ vkr_get_fd_info_from_resource_info(struct vkr_context *ctx,
       handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
       break;
    default:
-      vkr_log("Unsupported fd_type: %d", res->fd_type);
       return false;
    }
 
    int fd = os_dupfd_cloexec(res->u.fd);
-   if (fd < 0) {
-      vkr_log("os_dupfd_cloexec failed: %d (errno: %d)", fd, errno);
+   if (fd < 0)
       return false;
-   }
 
    *out = (VkImportMemoryFdInfoKHR){
       .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
@@ -81,34 +76,29 @@ vkr_get_fd_info_from_allocation_info(struct vkr_physical_device *physical_dev,
 {
    const uint32_t gbm_bo_use_flags =
       GBM_BO_USE_LINEAR | GBM_BO_USE_SW_READ_RARELY | GBM_BO_USE_SW_WRITE_RARELY;
-   struct gbm_bo *gbm_bo = NULL;
+   struct gbm_bo *gbm_bo;
    int fd = -1;
 
-   if (!physical_dev->gbm_device) {
-      vkr_log("No valid GBM device available.");
-      return VK_ERROR_INITIALIZATION_FAILED;
-   }
+   assert(physical_dev->gbm_device);
 
-   /* Ensure allocation size is reasonable */
-   if (alloc_info->allocationSize > UINT32_MAX) {
-      vkr_log("Allocation size %llu exceeds UINT32_MAX.", alloc_info->allocationSize);
+   /*
+    * Reject here for simplicity. Letting VkPhysicalDeviceVulkan11Properties return
+    * min(maxMemoryAllocationSize, UINT32_MAX) will affect unmappable scenarios.
+    */
+   if (alloc_info->allocationSize > UINT32_MAX)
       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-   }
 
-   /* Align allocation size to 4KB boundary */
-   gbm_bo = gbm_bo_create(physical_dev->gbm_device, 
-                          align(alloc_info->allocationSize, 4096), 1,
-                          GBM_FORMAT_R8, gbm_bo_use_flags);
-   if (!gbm_bo) {
-      vkr_log("gbm_bo_create failed.");
+   /* 4K alignment is used on all implementations we support. */
+   gbm_bo =
+      gbm_bo_create(physical_dev->gbm_device, align(alloc_info->allocationSize, 4096), 1,
+                    GBM_FORMAT_R8, gbm_bo_use_flags);
+   if (!gbm_bo)
       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-   }
 
-   fd = gbm_bo_get_fd(gbm_bo);
+   fd = vkr_gbm_bo_get_fd(gbm_bo);
    if (fd < 0) {
       vkr_gbm_bo_destroy(gbm_bo);
-      vkr_log("Failed to get fd from GBM buffer object.");
-      return VK_ERROR_OUT_OF_HOST_MEMORY;
+      return fd == -EMFILE ? VK_ERROR_TOO_MANY_OBJECTS : VK_ERROR_OUT_OF_HOST_MEMORY;
    }
 
    *out_gbm_bo = (void *)gbm_bo;
@@ -118,27 +108,37 @@ vkr_get_fd_info_from_allocation_info(struct vkr_physical_device *physical_dev,
       .fd = fd,
       .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
    };
-
    return VK_SUCCESS;
 }
 
-#else /* ENABLE_MINIGBM_ALLOCATION not defined */
+#else
 
-/* Fallback stubs for environments without GBM support */
+static inline int
+vkr_gbm_bo_get_fd(ASSERTED void *gbm_bo)
+{
+   vkr_log("minigbm_allocation is not enabled");
+   assert(!gbm_bo);
+   return -1;
+}
+
+static inline void
+vkr_gbm_bo_destroy(ASSERTED void *gbm_bo)
+{
+   vkr_log("minigbm_allocation is not enabled");
+   assert(!gbm_bo);
+}
+
 static inline VkResult
 vkr_get_fd_info_from_allocation_info(UNUSED struct vkr_physical_device *physical_dev,
                                      UNUSED const VkMemoryAllocateInfo *alloc_info,
                                      UNUSED void **out_gbm_bo,
                                      UNUSED VkImportMemoryFdInfoKHR *out_fd_info)
 {
-   vkr_log("minigbm_allocation is not enabled in this environment.");
-   return VK_ERROR_FEATURE_NOT_PRESENT;
+   vkr_log("minigbm_allocation is not enabled");
+   return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 }
 
-#endif
-
-
-/* ENABLE_MINIGBM_ALLOCATION */
+#endif /* ENABLE_MINIGBM_ALLOCATION */
 
 static void
 vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
@@ -242,23 +242,6 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
       if (export_info->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
          valid_fd_types |= 1 << VIRGL_RESOURCE_FD_DMABUF;
    }
-
-#if defined (__ANDROID__)
-   if (getenv("ANDROID_VENUS") && export_info) {
-      VkBaseInStructure *prev_of_export_info =
-         vkr_find_prev_struct(alloc_info, VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO);
-
-      prev_of_export_info->pNext = export_info->pNext;
-
-      args->ret = vkr_get_fd_info_from_allocation_info(physical_dev, alloc_info, &gbm_bo,
-                                                       &local_import_info);
-      if (args->ret != VK_SUCCESS)
-         return;
-
-      alloc_info->pNext = &local_import_info;
-      valid_fd_types = 1 << VIRGL_RESOURCE_FD_DMABUF;
-   }
-#endif
 
    struct vkr_device_memory *mem = vkr_device_memory_create_and_add(ctx, args);
    if (!mem) {
